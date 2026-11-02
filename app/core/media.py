@@ -53,6 +53,32 @@ def run(args, timeout=None, **kw):
                           timeout=timeout, creationflags=NO_WINDOW, **kw)
 
 
+def norm_crop(crop):
+    """截图的裁剪范围（2026-11-02）[左, 上, 右, 下]，占整张图的比例 0～1。不合法、太小或就是整张图返回 None（不裁剪）。"""
+    try:
+        l, t, r, b = (min(1.0, max(0.0, float(x))) for x in crop)
+    except (TypeError, ValueError):
+        return None
+    if r - l < 0.02 or b - t < 0.02 or (l <= 0.001 and t <= 0.001 and r >= 0.999 and b >= 0.999):
+        return None
+    return [round(l, 4), round(t, 4), round(r, 4), round(b, 4)]
+
+
+def crop_vf(crop) -> str:
+    """ffmpeg 的裁剪滤镜（宽高取偶数，jpg 编码要求）。crop 要先经过 norm_crop。"""
+    l, t, r, b = crop
+    return f'crop=trunc(iw*{r - l:.4f}/2)*2:trunc(ih*{b - t:.4f}/2)*2:trunc(iw*{l:.4f}):trunc(ih*{t:.4f})'
+
+
+def norm_width(w):
+    """截图的显示宽度（像素，2026-11-02）：80～1600 之外或没设返回 None（自动）。"""
+    try:
+        w = int(round(float(w)))
+    except (TypeError, ValueError):
+        return None
+    return w if 80 <= w <= 1600 else None
+
+
 def probe(path: str) -> dict:
     r = run([tool('ffprobe'), '-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', path], timeout=60)
     if r.returncode != 0:

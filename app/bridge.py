@@ -1,6 +1,8 @@
 """界面与后台之间的桥：界面通过 window.pywebview.api.call(名称, 参数) 调用这里的函数。
 不开本地网络端口（有的电脑上安全软件或代理会干扰 127.0.0.1 连接），视频直接用 file:// 播放。"""
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -694,6 +696,18 @@ class Api:
             return dict(r, chapters=n, original=str(dest))
         return {'job': jobs.start('book_ocr', run).id}
 
+    def do_book_fig(self, b):
+        """整理笔记里的「原书图示」在软件里直接显示（以前要剪藏到 Obsidian 才看得到图）：
+        和剪藏时同一个裁法（book.crop_figure，没写位置就整页），放进缓存的页面图文件夹（30 天没用自动删）。"""
+        path = str(b.get('path') or '')
+        n = int(b.get('n') or 1)
+        region = [x for x in re.split(r'[,，\s]+', str(b.get('region') or '').strip()) if x]
+        region = region if len(region) == 4 else None
+        dest = book.pages_dir(path) / f'fig_{n:04d}_{hashlib.sha1(",".join(region or []).encode()).hexdigest()[:8]}.jpg'
+        if not (dest.is_file() and dest.stat().st_size > 0):
+            book.crop_figure(path, book.read(path), n, region, dest)
+        return {'src': file_url(dest)}
+
     def do_book_page_img(self, b):
         """PDF 某一页的图（朗读原文时附在这一页文字后面看图表用；缓存 30 天没用自动删）。"""
         return {'src': file_url(book.render_page(b.get('path'), int(b.get('n')), 900))}
@@ -802,7 +816,7 @@ class Api:
         path = b.get('path')
         if not path or not os.path.isfile(path):
             raise ValueError('视频文件不见了')
-        return {'url': file_url(frames.grab(path, float(b.get('t') or 0), small=bool(b.get('small'))))}
+        return {'url': file_url(frames.grab(path, float(b.get('t') or 0), small=bool(b.get('small')), crop=b.get('crop')))}
 
     def do_models(self, b):
         name = b.get('provider')

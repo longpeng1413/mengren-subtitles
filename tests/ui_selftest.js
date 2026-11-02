@@ -34,6 +34,60 @@ Promise.race([new Promise(r => setTimeout(() => r((window.__R || []).concat(['TI
     ok('点媒体库里的视频就打开', await until(() => S.doc && S.doc.title === '演示视频' && document.querySelectorAll('.cue').length === 8));
     ok('当前视频在列表里高亮', await until(() => document.querySelector('.lib-item.active')));
     ok('视频可以加载', await until(() => v.readyState >= 1 && v.duration > 39), { rs: v.readyState, d: v.duration });
+    // 字幕里手动插截图（2026-10-30）：插在正在播放的这一句后面，可以上移 / 下移 / 删除
+    const ssSegs = S.doc.segments, ssK = 2;
+    v.currentTime = (ssSegs[ssK].start + ssSegs[ssK].end) / 2; await wait(300);
+    ok('字幕栏有「插入截图」按钮（视频才有）', !document.querySelector('#btnSubShot').hidden);
+    document.querySelector('#btnSubShot').click();
+    const ssAfter = () => { const el = document.querySelector('#cues .sub-shot'); const prev = el && el.previousElementSibling; return prev && prev.classList.contains('cue') ? +prev.dataset.i : -1; };
+    ok('插入截图：插在正在播放的这一句后面，图片加载出来', (S.doc.sub_shots || []).length === 1 && ssAfter() === ssK
+      && await until(() => (document.querySelector('#cues .sub-shot img') || {}).src), [S.doc.sub_shots, ssAfter()]);
+    document.querySelector('#cues .sub-shot [data-ss="down"]').click();
+    ok('截图下移：挪到下一句后面', ssAfter() === ssK + 1 && S.doc.sub_shots[0].at === ssSegs[ssK + 1].start, ssAfter());
+    document.querySelector('#cues .sub-shot [data-ss="up"]').click(); document.querySelector('#cues .sub-shot [data-ss="up"]').click();
+    ok('截图上移两次：回到上上一句后面', ssAfter() === ssK - 1, ssAfter());
+    renderCues();
+    ok('字幕重画后截图还在原来的位置', ssAfter() === ssK - 1);
+    // 编辑截图：裁剪、调整大小（2026-11-02）。seDrag 在编辑框的图上按比例位置拖动
+    window.seDrag = (x0, y0, x1, y1, el) => {
+      const r = $('#seImg').getBoundingClientRect();
+      const ev = (type, x, y, target) => (target || $('#seStage')).dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, clientX: r.left + r.width * x, clientY: r.top + r.height * y }));
+      ev('pointerdown', x0, y0, el); ev('pointermove', x1, y1); ev('pointerup', x1, y1);
+    };
+    const near = (a, b) => a && b && a.every((x, i) => Math.abs(x - b[i]) < 0.02);
+    document.querySelector('#cues .sub-shot [data-ss="crop"]').click();
+    ok('字幕截图点「裁剪」打开裁剪截图，显示整张截图', await until(() => $('#dlgShotEdit').open && $('#seImg').naturalWidth > 0));
+    seDrag(0.2, 0.2, 0.8, 0.7, $('#seBox'));
+    ok('一开始框是整张图：拖动画出新框', near(SE.crop, [0.2, 0.2, 0.8, 0.7]), SE.crop);
+    seDrag(0.8, 0.7, 0.7, 0.6, $('#seBox [data-h="se"]'));
+    ok('拖右下角缩小框', near(SE.crop, [0.2, 0.2, 0.7, 0.6]), SE.crop);
+    seDrag(0.4, 0.4, 0.3, 0.45, $('#seBox'));
+    ok('拖框里面移动框', near(SE.crop, [0.1, 0.25, 0.6, 0.65]), SE.crop);
+    $('#seOk').click(); await until(() => !$('#dlgShotEdit').open); await wait(50);
+    const subX = S.doc.sub_shots[0], subEl = () => document.querySelector('#cues .sub-shot');
+    ok('确定后记下裁剪范围，字幕栏显示裁剪后的图', near(subX.crop, [0.1, 0.25, 0.6, 0.65]) && !subX.w
+      && await until(() => /_c[0-9a-f]{8}\.jpg/.test((subEl().querySelector('img') || {}).src || '')), [subX, (subEl().querySelector('img') || {}).src]);
+    // 「大小」是单独的按钮（2026-11-02 用户：裁剪和调整大小是两个功能）：拖滑块马上变，不用点确定
+    subEl().querySelector('[data-ss="size"]').click();
+    const ctxM = $('#ctxMenu');
+    ok('字幕截图点「大小」弹出滑块（没被马上关掉）', !ctxM.hidden && ctxM.querySelector('input[type=range]'));
+    const rg = ctxM.querySelector('input[type=range]'); rg.value = 400; rg.dispatchEvent(new Event('input'));
+    ok('拖滑块：图马上变成 400 像素宽', subX.w === 400 && subEl().style.maxWidth === '402px' && subEl().classList.contains('sized')
+      && ctxM.querySelector('[data-a=lab]').textContent === '400 像素宽', subX);
+    ctxM.querySelector('[data-p="240"]').click();
+    ok('点「小」', subX.w === 240 && subEl().style.maxWidth === '242px');
+    ctxM.querySelector('[data-p="0"]').click();
+    ok('点「自动」：恢复原来的大小', !subX.w && !subEl().style.maxWidth && !subEl().classList.contains('sized'), subX);
+    closeMenus();
+    document.querySelector('#cues .sub-shot [data-ss="crop"]').click();
+    await until(() => $('#dlgShotEdit').open);
+    ok('再打开裁剪：框是上次的', near(SE.crop, subX.crop));
+    $('#seFull').click(); $('#seOk').click(); await until(() => !$('#dlgShotEdit').open); await wait(50);
+    ok('点「整张」：恢复成整张截图', !subX.crop, subX);
+    const keepConfirm = window.confirm; window.confirm = () => true;
+    document.querySelector('#cues .sub-shot [data-ss="del"]').click();
+    window.confirm = keepConfirm;
+    ok('删除截图', !(S.doc.sub_shots || []).length && !document.querySelector('#cues .sub-shot'));
 
     // 老师与术语表
     const tr = await api('teacher_save', { teacher: { name: '测试老师', terms: '底层逻辑\n风级 => 峰级', lang: 'en' } });
@@ -219,6 +273,57 @@ Promise.race([new Promise(r => setTimeout(() => r((window.__R || []).concat(['TI
     renderSummary();
     ok('课程重点里的插图能显示', await until(() => { const im = document.querySelector('#summaryBox .shot-fig img'); return im && im.complete && im.naturalWidth > 0; }, 15000));
     document.querySelectorAll('.ai-tabs .tab')[0].click();
+    // 课程重点里手动插截图、上移 / 下移 / 删除、打印（2026-11-02）
+    const sumKeep = S.doc.summary;
+    S.doc.summary = '## 一、开头\n\n- 要点甲 [00:03]\n- 要点乙 [00:20]\n\n## 二、后面\n\n- 要点丙 [00:30]';
+    S.doc.sum_shots = []; renderSummary(); updateButtons();
+    ok('课程重点有「插入截图」和「打印」按钮', !$('#btnSumShot').hidden && !$('#btnSumShot').disabled && !$('#btnPrint').hidden && !$('#btnPrint').disabled);
+    v.currentTime = 25; await wait(300);
+    $('#btnSumShot').click();
+    ok('插入截图：插在出处时间不晚于现在、最接近的那一条后面，图片加载出来', S.doc.summary.includes('- 要点乙 [00:20]\n\n![[画面 00:25]]\n\n## 二、后面')
+      && S.doc.sum_shots.includes(25) && await until(() => (document.querySelector('#summaryBox .shot-fig img') || {}).src), S.doc.summary);
+    $('#summaryBox .fig-tools [data-sf="up"]').click();
+    ok('截图上移：挪到上一条前面', S.doc.summary.includes('- 要点甲 [00:03]\n\n![[画面 00:25]]\n\n- 要点乙'), S.doc.summary);
+    $('#summaryBox .fig-tools [data-sf="down"]').click(); $('#summaryBox .fig-tools [data-sf="down"]').click();
+    ok('截图下移两次：越过小标题', S.doc.summary.includes('## 二、后面\n\n![[画面 00:25]]\n\n- 要点丙'), S.doc.summary);
+    ok('图下面的按钮不朗读', !TTS.segments($('#summaryBox')).some(x => x.text.includes('上移')));
+    $('#summaryBox .fig-tools [data-sf="crop"]').click();
+    ok('课程重点的图也能「裁剪」', await until(() => $('#dlgShotEdit').open && $('#seImg').naturalWidth > 0));
+    seDrag(0.1, 0.1, 0.5, 0.5, $('#seBox'));
+    $('#seOk').click(); await until(() => !$('#dlgShotEdit').open); await wait(50);
+    const sumFig = () => document.querySelector('#summaryBox .shot-fig');
+    $('#summaryBox .fig-tools [data-sf="size"]').click();
+    const rg2 = $('#ctxMenu input[type=range]'); rg2.value = 300; rg2.dispatchEvent(new Event('input'));
+    const fe = (S.doc.fig_edits || {})['25'];
+    ok('课程重点的图：按时间记下裁剪和宽度，显示裁剪后的图、马上变成 300 像素宽', fe && fe.w === 300 && fe.crop && Math.abs(fe.crop[2] - 0.5) < 0.02 && sumFig().style.maxWidth === '300px'
+      && await until(() => /_c[0-9a-f]{8}\.jpg/.test((sumFig().querySelector('img') || {}).src || '')), [fe, S.doc.summary]);
+    S.doc.sub_shots = [{ t: 10, at: S.doc.segments[1].start }]; placeSubShots();
+    $('#ctxMenu [data-a=all]').click();
+    ok('「这节课的图都用这个大小」：课程重点和字幕栏的截图一起改', S.doc.sub_shots[0].w === 300 && S.doc.fig_edits['25'].w === 300 && $('#ctxMenu').hidden
+      && document.querySelector('#cues .sub-shot').style.maxWidth === '302px', [S.doc.sub_shots, S.doc.fig_edits]);
+    S.doc.sub_shots = []; placeSubShots();
+    toggleSummaryEdit(true);
+    const sed = $('#summaryEdit'); sed.selectionStart = sed.selectionEnd = sed.value.indexOf('要点甲');
+    v.currentTime = 33; await wait(300);
+    $('#btnSumShot').click();
+    ok('编辑时插在光标那一行后面', S.doc.summary.includes('- 要点甲 [00:03]\n\n![[画面 00:33]]\n\n- 要点乙') && sed.value === S.doc.summary, S.doc.summary);
+    toggleSummaryEdit(false);
+    const keepConfirm2 = window.confirm; window.confirm = () => true;
+    $('#summaryBox .fig-tools [data-sf="del"]').click();
+    window.confirm = keepConfirm2;
+    ok('删除课程重点里的截图', !S.doc.summary.includes('00:33]]') && S.doc.sum_shots.join() === '25' && document.querySelectorAll('#summaryBox .shot-fig').length === 1, S.doc.summary);
+    let printed = null; const keepPrint = window.print;
+    window.print = () => { const pa = $('#printArea'); printed = { cls: document.body.classList.contains('printing'), html: pa ? pa.innerHTML : '', imgs: pa ? [...pa.querySelectorAll('img')].filter(im => im.complete && im.naturalWidth > 0).length : 0 }; };
+    $('#btnPrint').click();
+    ok('打印：只印课程名和课程重点，插图加载好了，没有上移下移按钮', await until(() => printed) && printed.cls && printed.html.includes(S.doc.title)
+      && printed.html.includes('要点丙') && printed.imgs === 1 && !printed.html.includes('上移') && getComputedStyle($('#printArea')).display === 'none', printed);
+    window.print = keepPrint;
+    window.dispatchEvent(new Event('afterprint'));
+    ok('打印完恢复原样', !document.body.classList.contains('printing') && !$('#printArea'));
+    document.querySelectorAll('.ai-tabs .tab')[1].click();
+    ok('「打印」只在课程重点页显示', $('#btnPrint').hidden);
+    document.querySelectorAll('.ai-tabs .tab')[0].click();
+    S.doc.summary = sumKeep; delete S.doc.sum_shots; delete S.doc.fig_edits; renderSummary();
 
     // 查漏补缺按钮和覆盖率
     renderSummary();
@@ -693,6 +798,13 @@ Promise.race([new Promise(r => setTimeout(() => r((window.__R || []).concat(['TI
     S.doc.chapters[0].md = '## 一、本章主题\n\n讲趋势。（P2）（PDF 第 5 页）';
     renderBook();
     ok('整理稿里的页码可以点', document.querySelectorAll('#bkView .pglink').length === 2);
+    // 原书图示在软件里直接显示（2026-10-30，以前要剪藏到 Obsidian 才变成图）
+    const mdKeep = S.doc.chapters[0].md;
+    S.doc.chapters[0].md = mdKeep + '\n\n![[原书图示 第4页 图1-1 三段结构 @0.1,0.3,0.9,0.6]]\n*原书图示｜图 1-1 三段结构（P2）*';
+    renderBook();
+    ok('整理笔记里的原书图示显示成图片，图的说明不朗读', await until(() => (document.querySelector('#bkView .book-fig img') || {}).src)
+      && !TTS.segments(document.querySelector('#bkView')).some(x => x.text.includes('第 4 页')), document.querySelector('#bkView').innerHTML.slice(-300));
+    S.doc.chapters[0].md = mdKeep; renderBook();
     document.querySelector('#bkView .pglink[data-p]').click();
     ok('点 P2 跳到 PDF 第 4 页', document.querySelector('#bookPdf').src.endsWith('#page=4'));
     // 书籍朗读（2026-10-29）：和课程重点一样，页码不读；换一章朗读停下

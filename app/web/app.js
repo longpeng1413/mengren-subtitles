@@ -96,6 +96,10 @@ function md(src) {
     if (table) flushTable();
     if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|?\s*:?-{2,}/.test(lines[li + 1] || '')) { flushPara(); flushList(); table = [cells(line)]; li++; continue; }
     if (/^\u0000\d+\u0000$/.test(line.trim())) { flushPara(); flushList(); out.push(`<pre><code>${esc(blocks[+line.trim().slice(1, -1)])}</code></pre>`); }
+    else if ((m = line.trim().match(/^!\[\[\s*原书图示\s*第\s*(\d{1,4})\s*页\s*([^@\]]*?)\s*(?:@\s*([\d.\s,，]+))?\s*\]\]$/))) {  // 书的整理笔记里的原书图示：软件里直接显示（hydrateBookFigs）
+      flushPara(); flushList();
+      out.push(`<figure class="book-fig" data-pn="${m[1]}" data-reg="${esc((m[3] || '').trim())}"><img alt="" title="点击看大图"><figcaption class="tts-skip">原书图示　第 ${m[1]} 页　${esc(m[2] || '')}</figcaption></figure>`);
+    }
     else if ((m = line.trim().match(/^!\[\[\s*画面\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\]$/))) { flushPara(); flushList(); const t = parseTs(m[1]); out.push(`<figure class="shot-fig" data-ft="${t}"><img alt=""><figcaption><a class="tslink" data-t="${t}">[${m[1]}]</a> 画面</figcaption></figure>`); }
     else if ((m = line.match(/^(#{1,6})\s+(.*)/))) { flushPara(); flushList(); const n = Math.min(4, m[1].length); out.push(`<h${n}>${inline(m[2])}</h${n}>`); }
     else if ((m = line.match(/^\s*[-*+]\s+(.*)/))) { flushPara(); if (!list || list.tag !== 'ul') { flushList(); list = { tag: 'ul', items: [] }; } list.items.push(m[1]); }
@@ -764,6 +768,7 @@ function renderChapterView() {
   $('#bkViewTitle').textContent = i === -2 ? '00、全书总览' : (c ? `${String(i + 1).padStart(2, '0')}、${c.title}（${pageRef(c.start)}–${pageRef(c.end)}）` : '');
   $('#bkView').innerHTML = (text || '').trim() ? bookMd(text)
     : `<div class="ai-empty">${i === -2 ? '章节整理好以后，点「全书总览」生成。' : c ? '这一章还没整理。点「整理选中的章节」开始。' : '先核对上面的书名、作者和页码，再看看章节分得对不对（可以直接改章名和起止页），然后整理。<br>点左边原文里的页码会跳过去。'}</div>`;
+  hydrateBookFigs($('#bkView'));
   $('#bkEdit').disabled = !(i === -2 || c); $('#bkCopy').disabled = !(text || '').trim();
   $('#bkViewHint').textContent = c && c.note ? c.note : '';
   if (bookEditing) toggleBookEdit(false);
@@ -865,6 +870,15 @@ function toggleBookEdit(on) {
   const i = S.bookSel.i;
   if (bookEditing) $('#bkEditor').value = i === -2 ? (S.doc.overview || '') : ((S.doc.chapters[i] || {}).md || '');
   else renderChapterViewOnly();
+}
+/* 原书图示：按页码和位置裁出来显示（bridge.do_book_fig，和剪藏时同一个裁法） */
+function hydrateBookFigs(root) {
+  const path = S.path;
+  $$('.book-fig', root).forEach(fig => {
+    api('book_fig', { path, n: +fig.dataset.pn, region: fig.dataset.reg || '' })
+      .then(r => { const img = fig.querySelector('img'); if (img && S.path === path) img.src = r.src; })
+      .catch(() => { fig.querySelector('figcaption').insertAdjacentText('beforeend', '（图裁不出来）'); });
+  });
 }
 const bookReading = () => typeof TTS !== 'undefined' && !!TTS.active() && TTS.active().root === $('#bkView');
 function renderChapterViewOnly() { const keep = bookEditing; bookEditing = false; renderChapterView(); bookEditing = keep; }
@@ -1089,6 +1103,7 @@ function bindBook() {
   });
   $('#bkCopy').onclick = () => { const i = S.bookSel.i; navigator.clipboard.writeText(i === -2 ? S.doc.overview : S.doc.chapters[i].md).then(() => toast('已复制')); };
   $('#bkView').addEventListener('click', e => {
+    const fimg = e.target.closest('.book-fig img'); if (fimg && fimg.src) return showLightbox(fimg.src);
     const a = e.target.closest('.pglink'); if (!a) return;
     if (a.dataset.n) bookJump(+a.dataset.n);
     else { const s = bookShift(); bookJump(+a.dataset.p + (s === null ? 0 : s)); }
@@ -1188,6 +1203,7 @@ function renderCues() {
   const segs = S.doc ? S.doc.segments : [];
   box.innerHTML = segs.length ? `<div class="cues-inner">${segs.map(cueHTML).join('')}</div>`
     : `<div class="cues-empty">这个文件还没有字幕。<br>点上方的「生成字幕」或「一键整理」开始。</div>`;
+  placeSubShots();
   S.active = -1;
   $('#cueCount').textContent = segs.length ? `${segs.length} 句` : '';
   updateDoubtBtn();
@@ -1200,6 +1216,59 @@ function cuesInner() {
   return inner;
 }
 function cueEl(i) { return $(`.cue[data-i="${i}"]`, $('#cues')); }
+/* ---------- 字幕里手动插的截图（2026-10-30 用户要求）：S.doc.sub_shots = [{t: 截图时间, at: 挂在哪一句后面（那一句的开始时间）}]。
+   位置按 at 找「开始时间不晚于它的最后一句」（findIndex），句子删了、拆了也找得到；上移 / 下移就是换挂到上一句 / 下一句
+   （语音识别断句不准时，图会落在不对的句子后面）。剪藏时 doc.sub_shot_images 插进「完整字幕」对应的位置。 ---------- */
+function placeSubShots() {
+  const inner = $('.cues-inner', $('#cues'));
+  if (!inner) return;
+  $$('.sub-shot', inner).forEach(el => el.remove());
+  const shots = (S.doc && S.doc.sub_shots) || [];
+  shots.map((x, k) => ({ x, k, i: findIndex(x.at) })).sort((a, b) => a.i - b.i || a.x.t - b.x.t).forEach(({ x, k, i }) => {
+    const html = `<div class="sub-shot${x.w ? ' sized' : ''}" data-sk="${k}"${x.w ? ` style="max-width:${x.w + 2}px"` : ''}>
+      <img alt="" title="点击看大图">
+      <div class="sub-shot-bar"><a class="tslink" data-t="${x.t}">[${fmt(x.t)}]</a> 截图
+        <span class="grow"></span>
+        <button data-ss="up" title="挪到上一句后面">↑ 上移</button><button data-ss="down" title="挪到下一句后面">↓ 下移</button><button data-ss="crop" title="只留需要的那一块">✂ 裁剪</button><button data-ss="size" title="调整这张图显示多大（拖滑块马上看到效果）">⇲ 大小</button><button data-ss="del" title="删掉这张截图">删除</button></div>
+    </div>`;
+    const cue = cueEl(i);
+    if (cue) {  // 挂在第 i 句后面：同一句后面有几张时，按插入顺序往后排
+      let after = cue;
+      while (after.nextElementSibling && after.nextElementSibling.classList.contains('sub-shot')) after = after.nextElementSibling;
+      after.insertAdjacentHTML('afterend', html);
+    } else inner.insertAdjacentHTML('afterbegin', html);  // 挂在第一句前面
+    const img = $(`.sub-shot[data-sk="${k}"] img`, inner);
+    frameUrl(x.t, false, x.crop).then(u => { if (u && img) img.src = u; });
+  });
+}
+function insertSubShot() {
+  const v = $('#video');
+  if (!S.doc || !v.getAttribute('src')) return;
+  if (!S.info || !S.info.has_video) return toast('这是音频，没有画面可以截');
+  if (!S.doc.segments.length) return toast('还没有字幕，先生成字幕再插截图');
+  v.pause();
+  const t = +v.currentTime.toFixed(2), i = Math.max(0, findIndex(t));
+  S.doc.sub_shots = S.doc.sub_shots || [];
+  if (S.doc.sub_shots.some(x => Math.abs(x.t - t) < 0.5)) return toast('这个时间已经插过一张了');
+  S.doc.sub_shots.push({ t, at: S.doc.segments[i].start });
+  placeSubShots(); markDirty();
+  const el = $(`.sub-shot[data-sk="${S.doc.sub_shots.length - 1}"]`); if (el) el.scrollIntoView({ block: 'nearest' });
+  toast('截图插在这一句后面了；位置不对可以点图下面的「上移 / 下移」', { ms: 5000 });
+}
+function moveSubShot(k, act) {
+  const x = (S.doc.sub_shots || [])[k], segs = S.doc.segments; if (!x) return;
+  if (act === 'crop') return openShotEdit(x.t, x.crop).then(r => { if (r) { setShotProp(x, 'crop', r.crop); placeSubShots(); markDirty(); } });
+  if (act === 'del') {
+    if (!confirm('删掉这张截图？')) return;
+    S.doc.sub_shots.splice(k, 1);
+  } else {
+    const i = findIndex(x.at), j = act === 'up' ? i - 1 : i + 1;
+    if (j < -1 || j >= segs.length) return toast(act === 'up' ? '已经在最前面了' : '已经在最后面了');
+    x.at = j < 0 ? -1 : segs[j].start;  // -1：挂在第一句前面
+  }
+  placeSubShots(); markDirty();
+  const el = $(`.sub-shot[data-sk="${k}"]`); if (el) el.scrollIntoView({ block: 'nearest' });
+}
 function findIndex(t) {
   const segs = S.doc ? S.doc.segments : [];
   let lo = 0, hi = segs.length - 1, ans = -1;
@@ -1425,9 +1494,14 @@ function updateButtons() {
   const vid = !!(S.info && S.info.has_video);
   $('#btnFrames').disabled = !S.doc || busy || !vid;
   $('#btnCapture').disabled = !S.doc || busy || !vid;
+  $('#btnSubShot').hidden = !vid;  // 音频没有画面
+  $('#btnSubShot').disabled = !has || busy;
   $('#btnDescribe').disabled = !S.doc || busy || !((S.doc && S.doc.frames) || []).some(f => !f.note);
   $('#btnRecheck').disabled = !S.doc || busy || !vid || !doubtIndexes().length;
   $('#btnReview').disabled = !has || busy || !(S.doc && (S.doc.summary || '').trim()) || !!S.chatAbort;
+  $('#btnSumShot').hidden = !vid;
+  $('#btnSumShot').disabled = !(S.doc && (S.doc.summary || '').trim()) || busy || !!S.chatAbort;
+  $('#btnPrint').disabled = !(S.doc && (S.doc.summary || '').trim()) || !!S.chatAbort;
   $('#btnTerms').disabled = !has || busy;
   const pend = S.doc && S.doc.terms_pending, nPend = pend ? pend.terms.length + pend.errors.length : 0;
   $('#btnTerms').textContent = nPend ? `新术语 ${nPend}` : '新术语';
@@ -2096,11 +2170,13 @@ async function doClip() {
 
 /* -------------------------------------------------------------- 画面 ---- */
 /* 插图：只挑文字说不清、需要看图的画面，每张一句说明；课程重点里的 ![[画面 mm:ss]] 剪藏时换成图片 */
-function frameUrl(t, small) {
-  const key = `${S.path}|${t}|${small ? 's' : ''}`;
-  if (!S.frameUrls[key]) S.frameUrls[key] = api('frame_url', { path: S.path, t, small }).then(r => r.url).catch(() => { delete S.frameUrls[key]; return ''; });
+function frameUrl(t, small, crop) {
+  const key = `${S.path}|${t}|${small ? 's' : ''}|${crop ? crop.join(',') : ''}`;
+  if (!S.frameUrls[key]) S.frameUrls[key] = api('frame_url', { path: S.path, t, small, crop: crop || null }).then(r => r.url).catch(() => { delete S.frameUrls[key]; return ''; });
   return S.frameUrls[key];
 }
+/* 课程重点里 ![[画面 mm:ss]] 实际用哪张画面：3 秒内有挑出来的画面就用它（和剪藏时 doc.place_figures 一样） */
+const figShot = t => (S.doc.frames || []).filter(f => Math.abs(f.t - t) <= 3).sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t))[0];
 const REDRAW_LABEL = 'AI辅助理解图｜根据老师讲解和画面整理，非原画面';
 /* AI辅助理解图在软件里怎么显示：SVG 直接显示（剪藏前后台已清理过）；Mermaid 显示代码，剪藏到 Obsidian 后显示成图 */
 function redrawHTML(r) {
@@ -2112,14 +2188,119 @@ function hydrateFigures(root) {
   if (!S.path) return;
   $$('[data-ft]', root).forEach(fig => {
     const t = +fig.dataset.ft, img = fig.querySelector('img');
-    const shot = (S.doc.frames || []).find(f => Math.abs(f.t - t) <= 3);
+    const shot = figShot(t);
     if (shot && shot.redraw && shot.redraw.code) {
       img.outerHTML = redrawHTML(shot.redraw);
       fig.querySelector('figcaption').insertAdjacentHTML('beforeend', `　<b>${REDRAW_LABEL}</b>${shot.redraw.kind === 'mermaid' ? '（流程图，剪藏到 Obsidian 后显示成图）' : ''}`);
       return;
     }
-    frameUrl(shot ? shot.t : t, false).then(u => { if (u) img.src = u; });
+    const e = (S.doc.fig_edits || {})[String(t)] || {};  // 编辑过的：裁剪后的图、显示宽度
+    if (e.w) fig.style.maxWidth = e.w + 'px';
+    frameUrl(shot ? shot.t : t, false, e.crop).then(u => { if (u) img.src = u; });
   });
+}
+/* ---------- 截图的「裁剪」和「大小」（2026-11-02 用户要求，是两个分开的功能）：字幕栏和课程重点里的截图都能用。
+   crop = [左, 上, 右, 下]（占整张截图的比例），w = 显示宽度（像素，没有 = 自动）。原截图不改：显示时后台按 crop 另裁一张（frames.grab），
+   剪藏时裁好再复制进笔记（doc._small_copy），宽度写成 Obsidian 的 ![[图|宽度]]。字幕截图记在 sub_shots 每一张上，
+   课程重点的图记在 fig_edits {'秒数': {crop, w}}（课程重点重新生成后同一时间的图照样用）。
+   裁剪：对话框 #dlgShotEdit。大小：图下面「大小」弹出滑块（openSizeMenu），拖动时图马上变，不用点确定。 ---------- */
+const SE = { crop: [0, 0, 1, 1] };
+function openShotEdit(t, crop) {
+  return new Promise(resolve => {
+    const dlg = $('#dlgShotEdit'), img = $('#seImg');
+    SE.crop = crop ? crop.slice() : [0, 0, 1, 1];
+    img.removeAttribute('src'); $('#seInfo').textContent = '正在取截图…';
+    img.onload = seDraw;
+    frameUrl(t, false).then(u => { if (u) img.src = u; else $('#seInfo').textContent = '截图取不到'; });
+    seDraw();
+    dlg.returnValue = ''; dlg.showModal();
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok') return resolve(null);
+      const c = SE.crop.map(x => Math.round(x * 10000) / 10000);
+      const full = c[0] <= 0.001 && c[1] <= 0.001 && c[2] >= 0.999 && c[3] >= 0.999;
+      resolve({ crop: full ? null : c });
+    };
+  });
+}
+function seDraw() {
+  const [l, t, r, b] = SE.crop, img = $('#seImg');
+  Object.assign($('#seBox').style, { left: l * 100 + '%', top: t * 100 + '%', width: (r - l) * 100 + '%', height: (b - t) * 100 + '%' });
+  if (img.naturalWidth) $('#seInfo').textContent = `留下 ${Math.round((r - l) * img.naturalWidth)} × ${Math.round((b - t) * img.naturalHeight)} 像素`;
+}
+function bindShotEdit() {
+  const stage = $('#seStage'), MIN = 0.03;
+  let drag = null;
+  const pos = e => { const r = $('#seImg').getBoundingClientRect(); return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)]; };
+  stage.addEventListener('pointerdown', e => {
+    if (!$('#seImg').naturalWidth) return;
+    e.preventDefault();
+    try { stage.setPointerCapture(e.pointerId); } catch (_) { /* 自测里的假事件没有真的指针 */ }
+    const full = SE.crop[2] - SE.crop[0] > 0.98 && SE.crop[3] - SE.crop[1] > 0.98;  // 框还是整张图时，拖动是画新框
+    drag = { h: e.target.dataset.h || (e.target.closest('#seBox') && !full ? 'move' : 'new'), p: pos(e), c: SE.crop.slice() };
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const [x, y] = pos(e), dx = x - drag.p[0], dy = y - drag.p[1];
+    let [l, t, r, b] = drag.c;
+    if (drag.h === 'new') SE.crop = [Math.min(drag.p[0], x), Math.min(drag.p[1], y), Math.max(drag.p[0], x), Math.max(drag.p[1], y)];
+    else if (drag.h === 'move') { const w = r - l, h = b - t; l = clamp(l + dx, 0, 1 - w); t = clamp(t + dy, 0, 1 - h); SE.crop = [l, t, l + w, t + h]; }
+    else {
+      if (drag.h.includes('w')) l = clamp(l + dx, 0, r - MIN);
+      if (drag.h.includes('e')) r = clamp(r + dx, l + MIN, 1);
+      if (drag.h.includes('n')) t = clamp(t + dy, 0, b - MIN);
+      if (drag.h.includes('s')) b = clamp(b + dy, t + MIN, 1);
+      SE.crop = [l, t, r, b];
+    }
+    seDraw();
+  });
+  const end = () => {
+    if (!drag) return;
+    const [l, t, r, b] = SE.crop;
+    if (r - l < MIN || b - t < MIN) SE.crop = drag.c;  // 只是点了一下：不改
+    drag = null; seDraw();
+  };
+  stage.addEventListener('pointerup', end);
+  stage.addEventListener('pointercancel', end);
+  $('#seFull').onclick = () => { SE.crop = [0, 0, 1, 1]; seDraw(); };
+}
+function setShotProp(o, k, v) { if (v) o[k] = v; else delete o[k]; return o; }  // 没裁剪 / 自动大小就不记
+/* 课程重点的图按秒数记在 fig_edits；什么都没改的去掉 */
+function setFigEdit(t, k, v) {
+  const key = String(t), all = S.doc.fig_edits = S.doc.fig_edits || {};
+  const e = setShotProp(all[key] || {}, k, v);
+  if (Object.keys(e).length) all[key] = e; else delete all[key];
+}
+const SIZE_PRESETS = [['小', 240], ['中', 400], ['大', 600], ['自动', 0]];
+/* 「大小」弹出框：w 现在的宽度（没有 = 自动），cur 图现在实际显示多宽（自动时滑块从这里开始），
+   set(w) 改一张图并马上显示，all(w) 这节课所有图都用这个大小 */
+function openSizeMenu(btn, { w, cur, set, all }) {
+  const r = btn.getBoundingClientRect();
+  const val = w || clamp(Math.round((cur || 480) / 10) * 10, 120, 960);
+  showCtx(r.left, r.bottom + 4, `<div class="menu-label">显示大小（拖动滑块，图马上跟着变）</div>
+    <div class="size-row"><input type="range" data-a="w" min="120" max="960" step="10" value="${val}"><span data-a="lab"></span></div>
+    <div class="size-presets">${SIZE_PRESETS.map(([n, v]) => `<button data-p="${v}" title="${v ? v + ' 像素宽' : '按原来的大小显示'}">${n}</button>`).join('')}</div>
+    <button class="menu-item" data-a="all" title="课程重点和字幕栏里这节课的所有截图都用这个大小">这节课的图都用这个大小</button>`, m => {
+    let now = w || null;
+    const show = () => {
+      $('[data-a=lab]', m).textContent = now ? `${now} 像素宽` : '自动';
+      $$('[data-p]', m).forEach(b => b.classList.toggle('on', +b.dataset.p === (now || 0)));
+    };
+    const pick = v => { now = v || null; if (now) $('[data-a=w]', m).value = now; set(now); markDirty(); show(); };
+    $('[data-a=w]', m).oninput = e => pick(+e.target.value);
+    $$('[data-p]', m).forEach(b => b.onclick = () => pick(+b.dataset.p));
+    $('[data-a=all]', m).onclick = () => {
+      m.hidden = true; all(now); markDirty();
+      toast(now ? `这节课的图都改成 ${now} 像素宽了` : '这节课的图都恢复成原来的大小了');
+    };
+    show();
+  });
+}
+/* 这节课的图都用同一个大小：课程重点里的每张图、字幕栏的每张截图 */
+function sizeAllShots(w) {
+  const ts = new Set((S.doc.summary || '').split('\n').map(figTime).filter(t => t !== null));
+  ts.forEach(t => setFigEdit(t, 'w', w));
+  (S.doc.sub_shots || []).forEach(x => setShotProp(x, 'w', w));
+  renderSummary(); placeSubShots();
 }
 function shotHTML(f, i) {
   return `<div class="shot" data-k="${i}">
@@ -2274,6 +2455,122 @@ function renderSummary() {
   updateButtons();
   if (s) refreshCoverage();
   hydrateFigures(box);
+  $$('.shot-fig', box).forEach((fig, n) => fig.querySelector('figcaption').insertAdjacentHTML('beforeend',
+    `<span class="fig-tools tts-skip" data-n="${n}"><button data-sf="up" title="挪到上一条重点前面">↑ 上移</button><button data-sf="down" title="挪到下一条重点后面">↓ 下移</button>${fig.querySelector('.redraw-svg, .redraw-code') ? '' : '<button data-sf="crop" title="只留需要的那一块">✂ 裁剪</button>'}${fig.querySelector('.redraw-code') ? '' : '<button data-sf="size" title="调整这张图显示多大（拖滑块马上看到效果）">⇲ 大小</button>'}<button data-sf="del" title="从课程重点里删掉这张图">删除</button></span>`));
+}
+/* ---------- 课程重点里手动插截图（2026-11-02 用户要求，和字幕栏的「插入截图」一样）：和 AI 插的图同一种写法，一行 ![[画面 mm:ss]]
+   （剪藏时 doc.place_figures 换成截图）。插在出处时间离视频现在最近（不晚于它）的那一条后面，正在编辑时插在光标那一行后面；
+   图下面「上移 / 下移」= 和上一块 / 下一块（一条重点、一个标题、一张表、一段代码）换位置，「删除」去掉这一行，AI 插的图也能挪。
+   手动插的时间记在 sum_shots：重新生成课程重点时由 doc.keep_sum_shots 放回去（分块和找位置的规则和这里一样，改一边要改另一边）。 ---------- */
+const FIG_LINE = /^\s*!\[\[\s*画面\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\]\s*$/;
+const BLOCK_START = /^\s*([-*+]\s|\d+[.、)]|#{1,6}\s|>|\||```|~~~|!\[\[)/;
+const figTime = line => { const m = line.match(FIG_LINE); return m ? parseTs(m[1]) : null; };
+function sumBlocks(lines) {  // 非空行分成块：[第一行, 最后一行]
+  const out = []; let i = 0;
+  while (i < lines.length) {
+    if (!lines[i].trim()) { i++; continue; }
+    const st = i;
+    if (/^\s*(```|~~~)/.test(lines[i])) { const f = lines[i].trim().slice(0, 3); i++; while (i < lines.length && !lines[i].trim().startsWith(f)) i++; i++; }
+    else if (/^\s*\|/.test(lines[i])) { while (i < lines.length && /^\s*\|/.test(lines[i])) i++; }
+    else if (FIG_LINE.test(lines[i])) i++;
+    else { i++; while (i < lines.length && lines[i].trim() && !BLOCK_START.test(lines[i])) i++; }
+    out.push([st, Math.min(i, lines.length) - 1]);
+  }
+  return out;
+}
+function sumTidy(lines) {  // 连着的空行只留一个（代码块里不动），去掉开头结尾的空行
+  const out = []; let fence = false;
+  for (const l of lines) {
+    if (/^\s*(```|~~~)/.test(l)) fence = !fence;
+    if (!fence && !l.trim() && (!out.length || !out[out.length - 1].trim())) continue;
+    out.push(l);
+  }
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return out.join('\n');
+}
+function sumAnchor(lines, t) {  // 插在哪一行后面：出处时间不晚于 t、离 t 最近的那一块；都比 t 晚就放在出处最早的那块前面；没有出处时间放最后
+  let best = null, first = null;
+  for (const [a, b] of sumBlocks(lines)) {
+    if (FIG_LINE.test(lines[a]) || /^\s*(```|~~~)/.test(lines[a])) continue;  // 图、代码块里的时间不算
+    const ts = (lines.slice(a, b + 1).join(' ').match(/(?<![\d:])(?:\d{1,2}:)?\d{1,2}:\d{2}(?![\d:])/g) || []).map(parseTs).filter(x => x !== null);
+    for (const x of ts) {
+      if (x <= t && (!best || x > best.x)) best = { x, end: b };
+      if (!first || x < first.x) first = { x, start: a };
+    }
+  }
+  return best ? best.end : first ? first.start - 1 : lines.length - 1;
+}
+function scrollToSumFig(t) {
+  const n = S.doc.summary.split('\n').filter(l => FIG_LINE.test(l)).findIndex(l => figTime(l) === t);
+  const fig = $$('#summaryBox .shot-fig')[n]; if (fig) fig.scrollIntoView({ block: 'nearest' });
+}
+function insertSumShot() {
+  const v = $('#video');
+  if (!S.doc || !v.getAttribute('src')) return;
+  if (!S.info || !S.info.has_video) return toast('这是音频，没有画面可以截');
+  if (!(S.doc.summary || '').trim()) return toast('还没有课程重点，先生成课程重点再插截图');
+  v.pause();
+  const t = Math.floor(v.currentTime), lines = S.doc.summary.split('\n');
+  if (lines.some(l => figTime(l) === t)) return toast('这个时间已经插过一张了');
+  let at;
+  if (summaryEditing) {  // 编辑时插在光标所在的那一块后面
+    const ed = $('#summaryEdit'), ln = ed.value.slice(0, ed.selectionStart).split('\n').length - 1;
+    const blk = sumBlocks(lines).find(([a, b]) => a <= ln && ln <= b);
+    at = blk ? blk[1] : Math.min(ln, lines.length - 1);
+  } else {
+    at = sumAnchor(lines, t);
+    for (const [a, b] of sumBlocks(lines))  // 那一条后面已经有更早的截图：排在它们后面，按时间先后
+      if (a > at && FIG_LINE.test(lines[a]) && figTime(lines[a]) < t && lines.slice(at + 1, a).every(l => !l.trim())) at = b;
+  }
+  lines.splice(at + 1, 0, '', `![[画面 ${fmt(t)}]]`, '');
+  S.doc.summary = sumTidy(lines);
+  S.doc.sum_shots = (S.doc.sum_shots || []).filter(x => x !== t).concat([t]);
+  markDirty();
+  if (summaryEditing) { $('#summaryEdit').value = S.doc.summary; return toast('截图插在光标那一行后面了'); }
+  renderSummary(); scrollToSumFig(t);
+  toast('截图插在出处时间最接近的那一条后面了；位置不对可以点图下面的「上移 / 下移」', { ms: 5000 });
+}
+function moveSumShot(n, act) {  // n：课程重点里从上往下第几张图
+  const lines = S.doc.summary.split('\n'), blocks = sumBlocks(lines);
+  const figs = blocks.map((b, k) => k).filter(k => FIG_LINE.test(lines[blocks[k][0]]));
+  const k = figs[n]; if (k === undefined) return;
+  const li = blocks[k][0], tag = lines[li].trim(), t = figTime(tag);
+  if (act === 'crop') {
+    const f = figShot(t);
+    return openShotEdit(f ? f.t : t, ((S.doc.fig_edits || {})[String(t)] || {}).crop).then(r => {
+      if (r) { setFigEdit(t, 'crop', r.crop); markDirty(); renderSummary(); }
+    });
+  }
+  if (act === 'del') {
+    if (!confirm('从课程重点里删掉这张图？')) return;
+    lines.splice(li, 1);
+    S.doc.sum_shots = (S.doc.sum_shots || []).filter(x => x !== t);
+    if (!lines.some(l => figTime(l) === t) && S.doc.fig_edits) delete S.doc.fig_edits[String(t)];
+  } else {
+    const j = act === 'up' ? k - 1 : k + 1;
+    if (j < 0 || j >= blocks.length) return toast(act === 'up' ? '已经在最前面了' : '已经在最后面了');
+    const at = act === 'up' ? blocks[j][0] : blocks[j][1];  // 上移：放到上一块前面；下移：删掉这一行后下一块往前挪了一行，放在它最后一行后面
+    lines.splice(li, 1);
+    lines.splice(at, 0, '', tag, '');
+  }
+  S.doc.summary = sumTidy(lines);
+  markDirty(); renderSummary();
+  if (act !== 'del') scrollToSumFig(t);
+}
+/* 打印课程重点（2026-11-02 用户要求，按钮在朗读旁边）：只印课程名和课程重点（连同插图），白底黑字；打印窗口里也能另存为 PDF */
+async function printSummary() {
+  if (!S.doc || !(S.doc.summary || '').trim()) return;
+  $$('#printArea').forEach(el => el.remove());
+  const box = document.createElement('div');
+  box.id = 'printArea'; box.className = 'md';
+  box.innerHTML = `<h1>${esc(S.doc.title || '课程重点')}</h1><div class="print-sub">课程重点</div>${md(S.doc.summary)}`;
+  document.body.appendChild(box);
+  hydrateFigures(box);
+  const t0 = Date.now();  // 等插图加载好（最多 8 秒），不然打出来是空框
+  while (Date.now() - t0 < 8000 && $$('img', box).some(img => !img.getAttribute('src') || !img.complete)) await sleep(100);
+  document.body.classList.add('printing');
+  window.addEventListener('afterprint', () => { document.body.classList.remove('printing'); box.remove(); }, { once: true });
+  window.print();
 }
 /* 字幕有多少被课程重点的出处时间引用到（粗略估计，用来判断有没有大段漏掉） */
 function refreshCoverage() {
@@ -2857,6 +3154,20 @@ function bind() {
   box.addEventListener('wheel', () => S.userScrollAt = Date.now(), { passive: true });
   box.addEventListener('mousedown', () => S.userScrollAt = Date.now());
   box.addEventListener('click', e => {
+    const ss = e.target.closest('.sub-shot');  // 字幕里插的截图：上移 / 下移 / 删除、点图看大图
+    if (ss) {
+      const b = e.target.closest('[data-ss]');
+      if (b && b.dataset.ss === 'size') {  // 不能冒泡到 document：那里的点击会把刚打开的弹出框关掉
+        e.stopPropagation();
+        const k = +ss.dataset.sk, x = S.doc.sub_shots[k];
+        openSizeMenu(b, { w: x.w, cur: ss.querySelector('img').clientWidth, all: sizeAllShots, set: w => {
+          setShotProp(x, 'w', w);
+          ss.classList.toggle('sized', !!w); ss.style.maxWidth = w ? `${w + 2}px` : '';
+        } });
+      } else if (b) moveSubShot(+ss.dataset.sk, b.dataset.ss);
+      else if (e.target.matches('img') && e.target.src) showLightbox(e.target.src);
+      return;
+    }
     const tool = e.target.closest('.cue-tools button');
     const cue = e.target.closest('.cue'); if (!cue) return;
     const i = +cue.dataset.i;
@@ -2915,6 +3226,7 @@ function bind() {
   $$('.ai-tabs .tab').forEach(t => t.onclick = () => {
     $$('.ai-tabs .tab').forEach(x => x.classList.toggle('active', x === t));
     $$('.ai-body').forEach(p => p.hidden = p.dataset.pane !== t.dataset.tab);
+    $('#btnPrint').hidden = t.dataset.tab !== 'summary';  // 只打印课程重点
   });
   $('#btnAiDock').onclick = () => savePrefs({ ai_dock: S.settings.ai_dock === 'side' ? 'bottom' : 'side' });
   $('#btnAiHide').onclick = () => savePrefs({ ai_hidden: true });
@@ -3000,6 +3312,7 @@ function bind() {
   $('#btnDoubts').onclick = nextDoubt;
   $('#btnFrames').onclick = () => { if (!S.job) findFrames(false); };
   $('#btnCapture').onclick = () => { if (!S.job) captureFrame(); };
+  $('#btnSubShot').onclick = () => { if (!S.job) insertSubShot(); };
   $('#btnDescribe').onclick = () => { if (!S.job) describeFrames((S.doc.frames || []).filter(f => !f.note)); };
   $('#btnRecheck').onclick = () => { if (!S.job) recheckDoubts(false); };
   const fb = $('#framesBox');
@@ -3015,8 +3328,20 @@ function bind() {
     if (e.target.matches('[data-unredraw]')) { delete f.redraw; delete f.unclear; renderFrames(); renderSummary(); markDirty(); }
   });
   $('#summaryBox').addEventListener('click', async e => {
+    const b = e.target.closest('.fig-tools [data-sf]');
+    if (b && b.dataset.sf === 'size') {  // 不能冒泡到 document：那里的点击会把刚打开的弹出框关掉
+      e.stopPropagation();
+      const fig = b.closest('.shot-fig'), t = +fig.dataset.ft;
+      openSizeMenu(b, { w: ((S.doc.fig_edits || {})[String(t)] || {}).w, cur: (fig.querySelector('img') || fig).clientWidth, all: sizeAllShots,
+        set: w => { setFigEdit(t, 'w', w); $$(`#summaryBox .shot-fig[data-ft="${t}"]`).forEach(f => f.style.maxWidth = w ? w + 'px' : ''); } });
+      return;
+    }
+    if (b) { if (!S.chatAbort) moveSumShot(+b.parentElement.dataset.n, b.dataset.sf); return; }
     const img = e.target.closest('.shot-fig img'); if (img && img.src) showLightbox(img.src);
   });
+  $('#btnSumShot').onclick = () => { if (!S.chatAbort) insertSumShot(); };
+  $('#btnPrint').onclick = printSummary;
+  bindShotEdit();
   $('#btnReview').onclick = () => { if (!S.job) runReview(); };
   $('#btnTerms').onclick = () => { if (S.job) return; if (S.doc.terms_pending) openTerms(); else findTerms(false); };
   $('#tDelete').onclick = deleteTeacher;

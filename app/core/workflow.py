@@ -812,7 +812,9 @@ def st_summary(ctx):
         raise WorkError('bad_output', 'AI 没有写出课程重点', True)
 
     def apply(doc):
-        doc['summary'] = text
+        old, doc['summary'] = doc.get('summary'), text
+        if doc.get('sum_shots'):  # 用户在旧课程重点里手动插的截图放回去
+            doc['summary'], doc['sum_shots'] = docs.keep_sum_shots(old, text, doc['sum_shots'])
         doc['summary_src'] = docs.summary_basis(d['segments'])  # 记下用的是哪一版字幕：之后字幕改多了会提醒重新生成
         _steps(doc).pop('review', None)
         _steps(doc)['summary'] = tasks.now()

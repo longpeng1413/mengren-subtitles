@@ -115,7 +115,27 @@ def note_hash(doc) -> str:
     segs = [[s['start'], s['text'], s['tr']] for s in clean_segments(doc.get('segments'))]
     doubts = sorted([round(float(d.get('t') or 0), 2), str(d.get('reason') or '')] for d in doc.get('doubts') or [] if isinstance(d, dict))
     data = [doc.get('title') or '', doc.get('teacher') or '', (doc.get('summary') or '').strip(), segs, doubts, bool(doc.get('reviewed'))]
+    shots = sorted([round(float(x.get('t') or 0), 2), round(float(x.get('at') or 0), 2)] + _shot_edit(x) for x in doc.get('sub_shots') or [] if isinstance(x, dict))
+    if shots:  # 有字幕截图才加：没有的旧字幕文件指纹不变，不会全都变成「待更新剪藏」
+        data.append(shots)
+    edits = sorted([k] + _shot_edit(v) for k, v in (doc.get('fig_edits') or {}).items() if isinstance(v, dict) and _shot_edit(v))
+    if edits:  # 课程重点里的图裁剪过、改过大小才加
+        data.append(edits)
     return hashlib.sha1(json.dumps(data, ensure_ascii=False).encode('utf-8')).hexdigest()[:16]
+
+
+def _shot_edit(x):
+    """截图编辑过的裁剪范围和显示宽度（2026-11-02）；没编辑过返回空列表。"""
+    from .media import norm_crop, norm_width
+    crop, w = norm_crop(x.get('crop')), norm_width(x.get('w'))
+    return [crop, w] if crop or w else []
+
+
+def _embed(name, w=None):
+    """笔记里的图片链接；设了显示宽度时写成 Obsidian 的 ![[图|宽度]]。"""
+    from .media import norm_width
+    w = norm_width(w)
+    return f'![[image/{name}|{w}]]' if w else f'![[image/{name}]]'
 
 
 SUMMARY_STALE_AT = 3  # 生成课程重点后字幕改了几句以上，提醒重新生成
@@ -330,12 +350,133 @@ def to_markdown(doc, teacher=None, series='', boundary=''):
     lines += ['## 完整字幕', '', '> 以下是带时间戳的完整字幕，作为审核和校验的原始数据。'
               + ('已人工校对。' if doc.get('reviewed') else '尚未人工校对。')
               + ('〔存疑：…〕是 AI 校对时标出、需要回听确认的句子。' if doubts else ''), '']
-    for s in segs:
+    imgs = doc.get('_sub_imgs') or {}  # 字幕里手动插的截图（clip 时换成图片）：{挂在第几句后面: [图片行]}，-1 是第一句前面
+    lines += [x for img in imgs.get(-1, []) for x in (img, '')]
+    for i, s in enumerate(segs):
         why = doubts.get(round(float(s['start']), 2))
         lines.append((f'[{fmt(s["start"])}] {s.get("text", "")}' + (f' 〔存疑：{why}〕' if why else '')).rstrip())
         if s.get('tr'):
             lines.append(f'　　{s["tr"]}')
+        for img in imgs.get(i, []):
+            lines += ['', img, '']
     return '\n'.join(lines).rstrip() + '\n'
+
+
+def sub_shot_index(segs, at):
+    """字幕截图挂在哪一句后面：开始时间不晚于 at 的最后一句（句子删了、拆了也能找到位置）；-1 是第一句前面。和界面 findIndex 一样。"""
+    k = -1
+    for i, s in enumerate(segs or []):
+        if float(s.get('start', 0)) <= float(at) + 0.05:
+            k = i
+        else:
+            break
+    return k
+
+
+def sub_shot_images(doc, note_dir: Path, title, shot):
+    """字幕里手动插的截图（2026-10-30 用户要求，sub_shots: [{t: 截图时间, at: 挂在哪一句后面（那一句的开始时间）}]）
+    → {挂在第几句后面: ['![[image/…]]']}；截图复制到笔记旁边的 image，文件名和课程重点的插图同一规则（同一时间只存一份）。
+    裁剪过的（crop，2026-11-02）另存「…__字幕裁剪.jpg」、每次剪藏重写（范围可能改了）；设了宽度（w）写进图片链接。"""
+    from .media import norm_crop
+    out = {}
+    segs = doc.get('segments') or []  # 和 to_markdown 写字幕时用同一份，位置才对得上
+    for x in sorted((x for x in doc.get('sub_shots') or [] if isinstance(x, dict)), key=lambda x: (float(x.get('at') or 0), float(x.get('t') or 0))):
+        t = float(x.get('t') or 0)
+        if shot is None:
+            line = f'（画面 {fmt(t)}）'
+        else:
+            try:
+                crop = norm_crop(x.get('crop'))
+                name = f'{safe_name(title)}__{fmt(t).replace(":", "-")}' + ('__字幕裁剪' if crop else '') + '.jpg'
+                dest = note_dir / 'image' / name
+                if crop or not dest.exists():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    _small_copy(Path(shot(t)), dest, crop)
+                line = _embed(name, x.get('w'))
+            except Exception:
+                line = f'（画面 {fmt(t)}，截图失败）'
+        out.setdefault(sub_shot_index(segs, x.get('at') or 0), []).append(line)
+    return out
+
+
+_FIG_LINE = re.compile(r'^\s*!\[\[\s*画面\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\]\s*$')
+_BLOCK_START = re.compile(r'^\s*([-*+]\s|\d+[.、)]|#{1,6}\s|>|\||```|~~~|!\[\[)')
+_TS_ANY = re.compile(r'(?<![\d:])(?:\d{1,2}:)?\d{1,2}:\d{2}(?![\d:])')
+
+
+def _md_blocks(lines):
+    """课程重点的非空行分成块 [(第一行, 最后一行)]：一条重点、一个标题、一张表、一段代码、一张图。和界面 sumBlocks 一样。"""
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        if not lines[i].strip():
+            i += 1
+            continue
+        st = i
+        if re.match(r'^\s*(```|~~~)', lines[i]):
+            f = lines[i].strip()[:3]
+            i += 1
+            while i < n and not lines[i].strip().startswith(f):
+                i += 1
+            i += 1
+        elif re.match(r'^\s*\|', lines[i]):
+            while i < n and re.match(r'^\s*\|', lines[i]):
+                i += 1
+        elif _FIG_LINE.match(lines[i]):
+            i += 1
+        else:
+            i += 1
+            while i < n and lines[i].strip() and not _BLOCK_START.match(lines[i]):
+                i += 1
+        out.append((st, min(i, n) - 1))
+    return out
+
+
+def _md_anchor(lines, t):
+    """手动插的图放在哪一行后面：出处时间不晚于 t、离 t 最近的那一块；都比 t 晚就放在出处最早的那块前面；没有出处时间放最后。和界面 sumAnchor 一样。"""
+    best = first = None
+    for a, b in _md_blocks(lines):
+        if _FIG_LINE.match(lines[a]) or re.match(r'^\s*(```|~~~)', lines[a]):  # 图、代码块里的时间不算
+            continue
+        for x in (_parse_ts(m) for m in _TS_ANY.findall(' '.join(lines[a:b + 1]))):
+            if x <= t and (best is None or x > best[0]):
+                best = (x, b)
+            if first is None or x < first[0]:
+                first = (x, a)
+    return best[1] if best else first[1] - 1 if first else len(lines) - 1
+
+
+def keep_sum_shots(old, new, shots):
+    """重新生成课程重点时，把用户手动插的截图（2026-11-02，sum_shots 记着秒数）放回新的课程重点：
+    只放旧课程重点里还在的（用户删掉的不放回）、新课程重点里还没有同一时间的图的；位置按出处时间找（_md_anchor）。
+    返回 (新课程重点, 还在的 sum_shots)。"""
+    def times(text):
+        return {_parse_ts(m.group(1)) for m in (_FIG_LINE.match(x) for x in (text or '').split('\n')) if m}
+    had, have = times(old), times(new)
+    lines = (new or '').split('\n')
+    keep = []
+    for t in shots or []:
+        try:
+            t = int(t)
+        except (TypeError, ValueError):
+            continue
+        if t in had and t not in keep:
+            keep.append(t)
+    add = sorted((t for t in keep if t not in have), reverse=True)  # 从晚到早插：挂在同一条后面的几张按时间先后排
+    if not add:
+        return new, keep
+    for t in add:
+        at = _md_anchor(lines, t)
+        lines[at + 1:at + 1] = ['', f'![[画面 {fmt(t)}]]', '']
+    out, fence = [], False  # 连着的空行只留一个（代码块里不动）
+    for x in lines:
+        if re.match(r'^\s*(```|~~~)', x):
+            fence = not fence
+        if not fence and not x.strip() and (not out or not out[-1].strip()):
+            continue
+        out.append(x)
+    while out and not out[-1].strip():
+        out.pop()
+    return '\n'.join(out), keep
 
 
 def _same_media(a, b):
@@ -616,12 +757,13 @@ def _parse_ts(s):
     return parts[0] * 3600 + parts[1] * 60 + parts[2] if len(parts) == 3 else parts[0] * 60 + parts[1]
 
 
-def _small_copy(src: Path, dest: Path):
-    """插进笔记的图缩到 960 宽、压缩一些，让知识库尽量小；压缩失败就原样复制。"""
+def _small_copy(src: Path, dest: Path, crop=None):
+    """插进笔记的图缩到 960 宽、压缩一些，让知识库尽量小；压缩失败就原样复制。crop：先裁出用户框的范围（media.norm_crop 过的）。"""
     try:
-        from .media import run, tool
+        from .media import crop_vf, run, tool
         tmp = dest.with_name(dest.stem + '.part.jpg')
-        r = run([tool('ffmpeg'), '-y', '-v', 'error', '-i', str(src), '-vf', "scale='min(960,iw)':-2", '-q:v', '6', str(tmp)], timeout=60)
+        vf = (crop_vf(crop) + ',' if crop else '') + "scale='min(960,iw)':-2"
+        r = run([tool('ffmpeg'), '-y', '-v', 'error', '-i', str(src), '-vf', vf, '-q:v', '6', str(tmp)], timeout=60)
         if r.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
             os.replace(tmp, dest)
             return
@@ -671,9 +813,11 @@ def _redraw_block(f, t, note_dir: Path, title):
     return f'{head}\n![[image/{name}]]'
 
 
-def place_figures(summary, frames_list, note_dir: Path, title, shot):
+def place_figures(summary, frames_list, note_dir: Path, title, shot, edits=None):
     """把课程重点里的 ![[画面 mm:ss]] 换成真正的图片：截图复制到笔记旁边的 image 文件夹；
-    这张画面有 AI辅助理解图（redraw）的，放重画的图，不放看不清的截图。"""
+    这张画面有 AI辅助理解图（redraw）的，放重画的图，不放看不清的截图。
+    edits（doc 的 fig_edits，2026-11-02）：{'秒数': {crop, w}}，用户在「编辑截图」里裁剪、改大小的：裁剪的另存「…__裁剪.jpg」，宽度写进图片链接。"""
+    from .media import norm_crop
     if not summary or not _FIG.search(summary):
         return summary
 
@@ -694,11 +838,14 @@ def place_figures(summary, frames_list, note_dir: Path, title, shot):
             src = Path(shot(real_t))
         except Exception:
             return f'（画面 {m.group(1)}，截图失败）'
-        name = f'{safe_name(title)}__{fmt(real_t).replace(":", "-")}.jpg'
+        e = (edits or {}).get(str(t))
+        e = e if isinstance(e, dict) else {}
+        crop = norm_crop(e.get('crop'))
+        name = f'{safe_name(title)}__{fmt(real_t).replace(":", "-")}' + ('__裁剪' if crop else '') + '.jpg'
         dest = note_dir / 'image' / name
         dest.parent.mkdir(parents=True, exist_ok=True)
-        _small_copy(src, dest)
-        return f'![[image/{name}]]'
+        _small_copy(src, dest, crop)
+        return _embed(name, e.get('w'))
     return _FIG.sub(repl, summary)
 
 
@@ -736,7 +883,8 @@ def clip(doc, vault: str, folder: str, teacher=None, series='', teacher_subfolde
     # 插图文件名沿用第一次剪藏时的名字：在软件里改了名再剪藏，不会多出一套新名字的图片、旧的没人清
     img_base = (doc.get('clip') or {}).get('img_base') if isinstance(doc.get('clip'), dict) else None
     img_base = img_base or doc.get('title') or '字幕'
-    out = dict(doc, summary=place_figures(doc.get('summary') or '', doc.get('frames'), path.parent, img_base, shot))
+    out = dict(doc, summary=place_figures(doc.get('summary') or '', doc.get('frames'), path.parent, img_base, shot, doc.get('fig_edits')),
+               _sub_imgs=sub_shot_images(doc, path.parent, img_base, shot))
     text, moved = to_markdown(out, teacher, series, boundary), 0
     if path.exists():  # 更新原来的笔记：保留用户在 Obsidian 里加的小节、标注和属性
         legacy = {x for x in ((teacher or {}).get('name'), (teacher or {}).get('display')) if x}

@@ -455,6 +455,61 @@ check('剪藏：有重画的放 AI辅助理解图并标注（Mermaid 代码块 /
       placed.count('AI辅助理解图｜根据老师讲解和画面整理，非原画面') == 2 and '```mermaid\nflowchart LR' in placed
       and '![[image/测试课__00-10__AI辅助理解图.svg]]' in placed and svg_file.read_text(encoding='utf-8').startswith('<svg')
       and '![[image/测试课__00-15.jpg]]' in placed and (note_dir / 'image' / '测试课__00-15.jpg').is_file(), placed)
+# 字幕里手动插的截图（2026-10-30）：挂在哪一句后面按「那一句的开始时间」找，剪藏时插进完整字幕对应的位置
+_ss_segs = [{'start': 0.0, 'end': 4.0, 'text': '第一句', 'tr': ''}, {'start': 4.0, 'end': 8.0, 'text': '第二句', 'tr': ''},
+            {'start': 8.0, 'end': 12.0, 'text': '第三句', 'tr': ''}]
+check('字幕截图：挂在开始时间不晚于它的最后一句后面；-1 是第一句前面；句子删了挂到前一句',
+      docs.sub_shot_index(_ss_segs, 4.0) == 1 and docs.sub_shot_index(_ss_segs, -1) == -1 and docs.sub_shot_index(_ss_segs[:1] + _ss_segs[2:], 4.0) == 0)
+_ss_doc = {'title': '截图课', 'media': str(mp4), 'segments': _ss_segs, 'summary': '要点',
+           'sub_shots': [{'t': 5.0, 'at': 4.0}, {'t': 1.0, 'at': -1}]}
+_ss_dir = TMP / 'subshot-note'
+_ss_imgs = docs.sub_shot_images(_ss_doc, _ss_dir, '截图课', lambda t: frames.grab(mp4, t))
+_ss_md = docs.to_markdown(dict(_ss_doc, _sub_imgs=_ss_imgs))
+_full = _ss_md.split('## 完整字幕')[1]
+check('字幕截图：剪藏时插进「完整字幕」，在挂的那一句下面（第一句前面的也在）',
+      _full.index('![[image/截图课__00-01.jpg]]') < _full.index('第一句') < _full.index('第二句') < _full.index('![[image/截图课__00-05.jpg]]') < _full.index('第三句')
+      and (_ss_dir / 'image' / '截图课__00-05.jpg').is_file(), _full)
+check('字幕截图：截图变了媒体库提示「待更新剪藏」；没有截图的旧字幕文件指纹不变',
+      docs.note_hash(_ss_doc) != docs.note_hash(dict(_ss_doc, sub_shots=[{'t': 5.0, 'at': 8.0}, {'t': 1.0, 'at': -1}]))
+      and docs.note_hash(dict(_ss_doc, sub_shots=[])) == docs.note_hash({k: v for k, v in _ss_doc.items() if k != 'sub_shots'}))
+# 编辑截图：裁剪、调整大小（2026-11-02）
+check('裁剪范围：不合法、太小、整张都当没裁剪；宽度 80～1600 之外当自动', media.norm_crop([0.1, 0.2, 0.6, 0.7]) == [0.1, 0.2, 0.6, 0.7]
+      and media.norm_crop([0, 0, 1, 1]) is None and media.norm_crop([0.5, 0.5, 0.51, 0.9]) is None and media.norm_crop('x') is None
+      and media.norm_width(360) == 360 and media.norm_width(20) is None and media.norm_width(None) is None)
+
+
+def _dims(f):
+    r = media.run([media.tool('ffprobe'), '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', str(f)])
+    return tuple(int(x) for x in r.stdout.strip().split(','))
+
+
+_full_f, _crop_f = frames.grab(mp4, 3.0), frames.grab(mp4, 3.0, crop=[0.25, 0.25, 0.75, 0.75])
+_fw, _fh = _dims(_full_f)
+_cw, _ch = _dims(_crop_f)
+check('界面显示裁剪后的截图：从整张截图裁出框的那一块，另存一张、原图不变', _crop_f != _full_f and abs(_cw - _fw / 2) <= 2 and abs(_ch - _fh / 2) <= 2
+      and _dims(_full_f) == (_fw, _fh) and _crop_f.parent == _full_f.parent, (_fw, _fh, _cw, _ch))
+_ed_dir = TMP / 'shot-edit-note'
+_placed = docs.place_figures('- 甲 [00:03]\n\n![[画面 00:03]]\n\n![[画面 00:06]]', [], _ed_dir, '编辑课', lambda t: frames.grab(mp4, t),
+                             {'3': {'crop': [0.25, 0.25, 0.75, 0.75], 'w': 360}, '6': {'w': 500}})
+check('剪藏：课程重点里裁剪过的图另存「…__裁剪.jpg」，宽度写进 Obsidian 的图片链接', '![[image/编辑课__00-03__裁剪.jpg|360]]' in _placed
+      and '![[image/编辑课__00-06.jpg|500]]' in _placed and abs(_dims(_ed_dir / 'image' / '编辑课__00-03__裁剪.jpg')[0] - _fw / 2) <= 2, _placed)
+_ed_imgs = docs.sub_shot_images({'segments': _ss_segs, 'sub_shots': [{'t': 5.0, 'at': 4.0, 'crop': [0, 0, 0.5, 1], 'w': 300}]}, _ed_dir, '编辑课',
+                                lambda t: frames.grab(mp4, t))
+check('剪藏：字幕里裁剪过的截图另存「…__字幕裁剪.jpg」，带宽度', _ed_imgs == {1: ['![[image/编辑课__00-05__字幕裁剪.jpg|300]]']}
+      and (_ed_dir / 'image' / '编辑课__00-05__字幕裁剪.jpg').is_file(), _ed_imgs)
+check('裁剪、改大小后媒体库提示「待更新剪藏」；没编辑过的指纹不变', docs.note_hash(dict(_ss_doc, fig_edits={'3': {'w': 360}})) != docs.note_hash(_ss_doc)
+      and docs.note_hash(dict(_ss_doc, fig_edits={'3': {}})) == docs.note_hash(_ss_doc)
+      and docs.note_hash(dict(_ss_doc, sub_shots=[{'t': 5.0, 'at': 4.0, 'crop': [0, 0, 0.5, 1]}, {'t': 1.0, 'at': -1}])) != docs.note_hash(_ss_doc))
+# 课程重点里手动插的截图（2026-11-02）：重新生成时放回去
+_new = '一句话。\n\n## 一、甲\n\n- 甲 [00:10]\n  接着说 [00:12]\n- 乙 [01:00]\n\n| 项 | 时间 |\n|---|---|\n| 丙 | 02:00 |\n\n```\n03:00 代码里\n```\n\n## 二、丁\n\n- 丁 [05:00]'
+_old = '旧的\n\n![[画面 00:30]]\n\n![[画面 02:30]]\n\n![[画面 03:30]]\n\n![[画面 00:05]]\n\n![[画面 09:00]]'
+_out, _keep = docs.keep_sum_shots(_old, _new, [30, 150, 210, 5, 540, 600])
+check('课程重点截图放回：跟在出处时间不晚于它的那一条后面（一条重点多行不拆开、表格整张、代码块里的时间不算）',
+      '  接着说 [00:12]\n\n![[画面 00:30]]\n\n- 乙' in _out and '| 丙 | 02:00 |\n\n![[画面 02:30]]\n\n![[画面 03:30]]\n\n```' in _out
+      and '## 一、甲\n\n![[画面 00:05]]\n\n- 甲 [00:10]' in _out and _out.endswith('- 丁 [05:00]\n\n![[画面 09:00]]')
+      and _keep == [30, 150, 210, 5, 540], _out)
+check('课程重点截图放回：新的里面已经有就不重复；没有要放回的原样返回', docs.keep_sum_shots('![[画面 00:30]]', _new + '\n\n![[画面 00:30]]', [30])[0].count('00:30]]') == 1
+      and docs.keep_sum_shots('无图', _new + '\n\n\n', [30]) == (_new + '\n\n\n', []))
 
 # 课程重点：老师自述、口述与课件不一致、未讲明
 T = llm.DEFAULT_TEMPLATE
@@ -615,8 +670,15 @@ bmd = docs.load(str(pdfp))['chapters'][0]['md']
 check('整理一章（写进书旁边的整理结果）', jb['status'] == 'completed' and bmd.startswith('## 一、本章主题') and not docs.load(str(pdfp))['chapters'][1]['md'], jb)
 check('有图表的页附上页面图、锚点写法正确', '[图]' in calls[0] and '锚点写作（P2）' in calls[0] and '【PDF 第 4 页' in calls[0])
 # 2026-10-29 改成提炼：不设固定栏目、篇幅写成具体字数（约原文 1/5）、不逐段标页码、每章最多 1 张图；不再查漏补页
-check('整理要求是提炼：不设固定栏目、要留的四样、每章最多 1 张图', '十三、' not in book.DEFAULT_RULES and '提炼笔记' in book.DEFAULT_RULES
-      and '照着做' in book.DEFAULT_RULES and '原话' in book.DEFAULT_RULES and '最多 1 张' in book.DEFAULT_RULES)
+check('整理要求是提炼：不设固定栏目、要留的四样、每章挑最关键的 1～2 张图', '十三、' not in book.DEFAULT_RULES and '提炼笔记' in book.DEFAULT_RULES
+      and '照着做' in book.DEFAULT_RULES and '原话' in book.DEFAULT_RULES and '最关键的 1～2 张' in book.DEFAULT_RULES)
+check('插原书图示：看不准位置可以不写，软件用整页（不要因此不插图）', '看不准位置就不写' in book.FIGURE_RULE)
+import urllib.parse  # noqa: E402
+import urllib.request  # noqa: E402
+_f1 = api.call('book_fig', {'path': str(pdfp), 'n': 4, 'region': '0.1,0.3,0.9,0.6'})
+_f2 = api.call('book_fig', {'path': str(pdfp), 'n': 4, 'region': ''})
+check('整理笔记里的原书图示在软件里直接显示：按位置裁出来；没写位置就整页', _f1['ok'] and _f2['ok'] and _f1['src'] != _f2['src']
+      and all(Path(urllib.request.url2pathname(urllib.parse.urlparse(x['src']).path)).is_file() for x in (_f1, _f2)), (_f1, _f2))
 check('篇幅写成具体字数：约原文 1/5，最多 1/4', '篇幅：这一章原文约' in calls[0] and '字左右，最多不超过' in calls[0], calls[0][:400])
 check('不再查漏补页', not any('查漏员' in c for c in calls), len(calls))
 _lr = book.length_rule({'pages': [{'n': 1, 'text': '字' * 10000}]}, {'start': 1, 'end': 1})

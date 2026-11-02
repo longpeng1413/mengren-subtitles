@@ -255,6 +255,7 @@
           <button class="btn small doubt-btn" id="btnDoubts" hidden title="AI 校对时标出的存疑句，点一下跳到下一句（会单句循环播放，方便回听）"></button>
           <label class="switch" title="人工检查过字幕后打开，剪藏的笔记里会标注「已人工校对」"><input type="checkbox" id="optReviewed"><span></span>已校对</label>
           <span class="muted small-text" id="cueCount"></span>
+          <button class="btn small video-shot" id="btnSubShot" title="把视频现在的画面截下来，插在正在播放的这一句后面（插进去以后可以上下移动；剪藏时也放进笔记的「完整字幕」）"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>插入截图</button>
           <div class="menu-wrap">
             <button class="btn icon-only small" id="btnText" title="文字设置：字号、行距、宽度、字体"><b class="aa">Aa</b></button>
             <div class="menu text-menu" id="menuText">
@@ -293,6 +294,7 @@
     <button class="tab" data-tab="frames">画面<span class="tab-count" id="framesCount"></span></button>
     <span class="grow"></span>
     <button class="btn small tts-btn" id="btnTts" title="朗读（边听边看）：课程重点页读课程重点，AI 对话页读 AI 的回答"><svg viewBox="0 0 24 24"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M3 14h3v6H4a1 1 0 0 1-1-1zM21 14h-3v6h2a1 1 0 0 0 1-1z"/></svg>朗读</button>
+    <button class="btn small" id="btnPrint" disabled title="打印课程重点（连同插图）；在打印窗口里也可以选「另存为 PDF」"><svg viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/></svg>打印</button>
     <span class="ai-model" id="aiModel"></span>
     <button class="btn icon-only small" id="btnAiMax" title="放大 AI 区（视频缩到最小）"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
     <button class="btn icon-only small" id="btnAiDock" title="移到右侧 / 移回视频下方"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
@@ -308,6 +310,7 @@
       <button class="btn small" id="btnTerms" disabled title="找出这节课里术语表还没有的新术语和识别错误，你勾选确认后加进老师的术语表。还没选老师时：找出这节课的专用术语，勾选后填老师名字，建立这位老师的术语表">新术语</button>
       <button class="btn small" id="btnEditSummary" disabled>编辑</button>
       <button class="btn small" id="btnCopySummary" disabled>复制</button>
+      <button class="btn small video-shot" id="btnSumShot" disabled title="把视频现在的画面截下来，插在出处时间离现在最近的那一条重点后面（正在编辑时插在光标那一行后面）；插进去以后可以上下移动，剪藏时也放进笔记"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>插入截图</button>
       <span class="muted small-text" id="summaryHint"></span>
     </div>
   </div>
@@ -508,6 +511,22 @@
   </form>
 </dialog>
 
+<!-- 编辑截图：裁剪、调整大小（字幕栏和课程重点里插的截图） -->
+<dialog id="dlgShotEdit" class="dialog shot-edit-dlg">
+  <form method="dialog">
+    <h2>裁剪截图</h2>
+    <p class="muted small-text se-tip">在图上拖出要留下的部分；拖框里面可以移动，拖四角和四边可以调整。原截图不会被改，随时可以点「整张」恢复。</p>
+    <div class="se-wrap"><div class="se-stage" id="seStage"><img id="seImg" alt="" draggable="false"><div class="se-box" id="seBox"><i data-h="nw"></i><i data-h="n"></i><i data-h="ne"></i><i data-h="e"></i><i data-h="se"></i><i data-h="s"></i><i data-h="sw"></i><i data-h="w"></i></div></div></div>
+    <div class="dialog-btns">
+      <button type="button" class="btn" id="seFull" title="不裁剪，用整张截图">整张（不裁剪）</button>
+      <span class="muted small-text" id="seInfo"></span>
+      <span class="grow"></span>
+      <button value="cancel" class="btn">取消</button>
+      <button value="ok" class="btn primary" id="seOk">确定</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- 翻译 -->
 <dialog id="dlgTranslate" class="dialog">
   <form method="dialog">
@@ -614,6 +633,10 @@
           <li><b>查漏补缺</b>：对照完整字幕，找出课程重点漏掉的内容，补进对应的小节。</li>
           <li><b>新术语</b>：找出这节课里术语表还没有的新术语和识别错误，你勾选确认后才加进老师的术语表。按钮变亮表示已经找好了、等你勾选。</li>
           <li><b>编辑</b>：直接改课程重点。<b>复制</b>：复制全文。</li>
+          <li><b>插入截图</b>（视频才有）：把视频现在的画面截下来，插在出处时间离现在最近（不晚于现在）的那一条重点后面；正在「编辑」时插在光标那一行后面。图下面「上移 / 下移」一次挪过一条重点（标题、一张表也算一条），「删除」去掉这张图；AI 插的图也能这样挪。手动插的图「重新生成」课程重点后会自动放回去；剪藏时和 AI 插的图一样放进笔记。</li>
+          <li><b>✂ 裁剪</b>（课程重点和字幕栏的截图下面都有）：在截图上拖出要留下的部分（框还是整张时直接拖就是画框；画好后拖框里面移动，拖四角、四边调整），「整张（不裁剪）」恢复整张图。原截图不会被改。</li>
+          <li><b>⇲ 大小</b>（同上）：拖滑块调这张图显示多宽，图马上跟着变，不用点确定；也可以点「小 / 中 / 大 / 自动」（自动 = 原来的大小）；「这节课的图都用这个大小」把课程重点和字幕栏里这节课的截图都改成一样大。软件里、打印出来、剪藏到 Obsidian 的笔记里都是这个大小。</li>
+          <li><b>打印</b>（朗读旁边，课程重点页才有）：只打印课程名和课程重点（连同插图），文字黑色，图片保持原色；在弹出的打印窗口里「颜色」选「彩色」就打印彩色图片，选「黑白」省彩色墨水；也可以选「另存为 PDF」。</li>
           <li><b>下面那行小字</b>：「字幕被引用约 93%」是课程重点里标了出处时间的内容，覆盖了多少字幕；「有 3 段没有出处（如 00:06…）」是哪几段字幕没被重点引用，可以点时间回去听听有没有漏掉要紧的。</li>
           <li>重点里带方括号的时间（如 [01:42]）点一下跳到视频那里。</li>
         </ul>
@@ -675,7 +698,7 @@
         <ul>
           <li><b>点字幕文字</b>：跳到这一句，同时可以直接修改，改完自动保存。<b>点时间</b>：只跳转。</li>
           <li><b>鼠标移到某一句</b>，右侧有工具：把开始时间对齐到当前播放位置、在光标处拆成两句、与下一句合并、删除。都可以撤销（Ctrl + Z 或字幕栏上方的撤销按钮）。</li>
-          <li><b>字幕栏上方</b>：搜索（Enter 跳到下一个）、「已校对」开关（人工检查完打开，剪藏的笔记会标明）、「Aa」文字设置（字号、行距、句间距、宽度、字体、主题）、历史版本（重新识别、AI 校对、清空、恢复前自动存的，最多 5 份）。</li>
+          <li><b>字幕栏上方</b>：搜索（Enter 跳到下一个）、「插入截图」（把视频现在的画面插在正在播放的这一句后面；断句不准时点图下面的「上移 / 下移」挪位置，「✂ 裁剪」只留需要的部分，「⇲ 大小」调图显示多大，用法和课程重点的截图一样；剪藏时也放进笔记的「完整字幕」）、「已校对」开关（人工检查完打开，剪藏的笔记会标明）、「Aa」文字设置（字号、行距、句间距、宽度、字体、主题）、历史版本（重新识别、AI 校对、清空、恢复前自动存的，最多 5 份）。</li>
           <li><b>视频下方</b>：字幕跟随、显示译文、画面上叠加字幕、单句循环（开着时旁边写明在循环哪一句，点一下就关；换一节课自动关掉）、播放速度。</li>
           <li><b>布局</b>：视频和字幕之间、视频和 AI 区之间的分隔条都能拖动；AI 区可以移到最右边当侧边栏、放大或隐藏。</li>
         </ul>
@@ -825,7 +848,7 @@
               <li>按这一章自己的逻辑分几个小标题，不设固定栏目；留核心观点和结论、作者的原话定义、代表性的例子，能照着做的方法集中写在最后「照着做」；</li>
               <li>每个小标题标一次书上的页码（P42），点页码左边就跳到那一页；拿不准的句子标「（存疑）」；</li>
               <li>有图表的页截成图片给 AI 看；PDF 旁边有同名 Word（WPS OCR 导出的）时自动拿它当正文参考；外文书的笔记也用中文写；</li>
-              <li>原书图示非必要不用，每章最多 1 张。</li>
+              <li>每章挑最关键的 1～2 张原书的图（形态、结构、流程、案例走势、关键表格）插进去；整理笔记里直接显示图，点图看大图；AI 看不准图的位置时用整页。</li>
             </ul></li>
           <li>「整理笔记」切到「AI 对话」：可以「问这一章」（AI 读这一章的原文全文和笔记）或「问整本书」（AI 读全部章节笔记，再从原文里挑相关的页）。回答标页码，点了原书跳过去。</li>
           <li>点「全书总览」生成「00、全书总览」，再点顶栏「剪藏」：写进 Obsidian 的 <code>《书名》作者/</code> 文件夹。重新剪藏和视频笔记一样：你在 Obsidian 里自己加的小节（例如 <code>## 我的笔记</code>）、写在要点下面的标注（<code>&gt; [!note] 我的理解</code>）、属性和标签都会保留；直接改了软件写的小节，剪藏前会先问你，确认后先备份再更新。</li>

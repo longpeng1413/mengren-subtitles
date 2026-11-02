@@ -11,6 +11,7 @@
    让 AI 依据老师的讲解和画面里能看清的部分重画：关系图用 Mermaid 代码，形状图用 SVG。只画老师讲过、画过的，
    拿不准就不画（保留原截图）。结果记在画面的 redraw = {kind: 'mermaid'|'svg', code, note}，剪藏时代替截图（doc.place_figures）。
 截图放在缓存里（「缓存/frames」），删了随时可以按时间重新截。"""
+import hashlib
 import json
 import os
 import re
@@ -20,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import CACHE_DIR
-from .media import MediaError, NO_WINDOW, cache_key, run, tool
+from .media import MediaError, NO_WINDOW, cache_key, crop_vf, norm_crop, run, tool
 
 W, H = 64, 36
 STEP = 2.0            # 每隔几秒取一张小图
@@ -114,8 +115,22 @@ def frame_file(path, t, small=False) -> Path:
     return frames_dir(path) / (f'{int(round(float(t) * 1000)):09d}' + ('_s' if small else '') + '.jpg')
 
 
-def grab(path, t, small=False) -> Path:
-    """截一张图（已经截过就直接用）。small=True 时截 640 宽的小图，用来筛选。"""
+def grab(path, t, small=False, crop=None) -> Path:
+    """截一张图（已经截过就直接用）。small=True 时截 640 宽的小图，用来筛选。
+    crop：用户在「编辑截图」里框的范围（media.norm_crop），从整张截图裁出来另存一张（同一个缓存文件夹，一起按 30 天清理）。"""
+    crop = norm_crop(crop) if crop else None
+    if crop:
+        src = grab(path, t)
+        out = src.with_name(src.stem + '_c' + hashlib.sha1(json.dumps(crop).encode()).hexdigest()[:8] + '.jpg')
+        if out.is_file() and out.stat().st_size > 0:
+            return out
+        tmp = out.with_name(out.stem + '.part.jpg')
+        r = run([tool('ffmpeg'), '-y', '-v', 'error', '-i', str(src), '-vf', crop_vf(crop), '-q:v', '3', str(tmp)], timeout=60)
+        if r.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
+            tmp.unlink(missing_ok=True)
+            raise MediaError('裁剪截图失败：' + (r.stderr.strip()[:200] or '未知错误'))
+        os.replace(tmp, out)
+        return out
     out = frame_file(path, t, small)
     if out.is_file() and out.stat().st_size > 0:
         return out

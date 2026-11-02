@@ -447,6 +447,15 @@ check('之后改了 3 句：提醒重新生成（媒体库也标出来）', docs
 check('保存时把「改了几句」告诉界面', docs.save(L1, d)['summary_changes'] == 3)
 wf.run_step(L1, 'summary', force=True)
 check('重新生成后不再提醒', docs.summary_changes(docs.load(L1)) == 0 and not next(x for x in wf.find(course='峰级') if x['path'] == L1)['summary_outdated'])
+# 课程重点里手动插的截图（2026-11-02）：重新生成后放回去，按出处时间找位置；用户已经删掉的不放回
+d = docs.load(L1)
+d['summary'] = d['summary'].replace('## 一、峰级', '![[画面 00:05]]\n\n## 一、峰级') + '\n\n![[画面 00:03]]'
+d['sum_shots'] = [3, 7, 5]  # 00:07 用户插过又删掉了
+docs.save(L1, d)
+wf.run_step(L1, 'summary', force=True)
+d = docs.load(L1)
+check('重新生成课程重点：手动插的截图放回出处时间最接近的那条后面，删掉的不放回', d['sum_shots'] == [3, 5]
+      and '- 峰级的入门很重要 [00:02]\n\n![[画面 00:03]]\n\n![[画面 00:05]]\n\n## 二、结构' in d['summary'] and '00:07' not in d['summary'], d['summary'])
 old = {'summary': '以前生成的重点', 'segments': [{'start': 0, 'end': 1, 'text': '甲改', 'tr': ''}, {'start': 1, 'end': 2, 'text': '乙改', 'tr': ''}, {'start': 2, 'end': 3, 'text': '丙', 'tr': ''}],
        'fixes': [{'t': 0, 'before': '甲', 'after': '甲改', 'by': 'manual'}, {'t': 1, 'before': '乙', 'after': '乙改', 'by': 'manual'},
                  {'t': 2, 'before': '丁', 'after': '丙', 'by': 'ai'}, {'t': 3, 'before': '戊', 'after': '撤销掉的', 'by': 'manual'}]}

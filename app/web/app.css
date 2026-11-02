@@ -278,6 +278,17 @@ select { height: 30px; border-radius: var(--radius); border: 1px solid var(--lin
 .search:focus-within { border-color: var(--accent-line); }
 .cues { flex: 1; overflow-y: auto; min-height: 0; padding: 4px 6px 40vh 0; scroll-behavior: smooth; }
 .cues-inner { max-width: var(--cue-width); }
+/* 字幕里手动插的截图：缩进到和字幕文字对齐，下面一排「上移 / 下移 / 删除」 */
+.sub-shot { margin: 4px 62px 8px 94px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel2); }
+.sub-shot img { display: block; width: 100%; max-height: 360px; object-fit: contain; background: #000; cursor: zoom-in; min-height: 60px; }
+.sub-shot-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 12px; color: var(--muted); }
+.sub-shot-bar button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+.sub-shot-bar button:hover { border-color: var(--accent-line); color: var(--accent); }
+.sub-shot-bar button[data-ss="del"]:hover { color: var(--danger); border-color: var(--danger); }
+.btn.video-shot svg { width: 15px; height: 15px; }
+.book-fig { margin: .8em 0; text-align: center; }
+.book-fig img { max-width: 100%; max-height: 520px; border-radius: 6px; background: #fff; cursor: zoom-in; min-height: 40px; }
+.book-fig figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .cues-empty { text-align: center; color: var(--muted); margin-top: 18vh; line-height: 2; }
 .cue { position: relative; display: grid; grid-template-columns: 74px 1fr; gap: 4px 12px; padding: var(--cue-gap) 62px var(--cue-gap) 8px; border-radius: 10px; border: 1px solid transparent; transition: background .15s, border-color .15s; }
 .cue:hover { background: var(--panel); }
@@ -412,7 +423,53 @@ select { height: 30px; border-radius: var(--radius); border: 1px solid var(--lin
 .shot .cap { font-size: 12px; color: var(--muted); margin-top: 3px; }
 .shot.busy textarea { opacity: .5; }
 .shot-fig { margin: 8px 0 12px; max-width: 560px; }
-.shot-fig figcaption { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.shot-fig figcaption { font-size: 12px; color: var(--muted); margin-top: 3px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* 课程重点里的图：上移 / 下移 / 删除（2026-11-02） */
+.fig-tools { margin-left: auto; display: inline-flex; gap: 4px; }
+.fig-tools button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 1px 8px; font-size: 12px; cursor: pointer; }
+.fig-tools button:hover { border-color: var(--accent-line); color: var(--accent); }
+.fig-tools button[data-sf="del"]:hover { color: var(--danger); border-color: var(--danger); }
+/* 编辑截图：裁剪、调整大小（2026-11-02） */
+.shot-edit-dlg { max-width: 96vw; }
+.se-tip { margin: -8px 0 10px; }
+.se-wrap { display: flex; justify-content: center; background: #000; border-radius: 8px; padding: 8px; }
+.se-stage { position: relative; display: inline-block; user-select: none; touch-action: none; cursor: crosshair; overflow: hidden; }
+.se-stage img { display: block; max-width: min(82vw, 960px); max-height: 60vh; min-width: 200px; min-height: 120px; }
+.se-box { position: absolute; box-shadow: 0 0 0 9999px rgba(0,0,0,.6); outline: 2px solid var(--accent); cursor: move; }
+.se-box i { position: absolute; width: 12px; height: 12px; background: var(--accent); border: 2px solid #fff; border-radius: 3px; box-sizing: border-box; }
+.se-box i[data-h="nw"] { left: -7px; top: -7px; cursor: nwse-resize; }
+.se-box i[data-h="n"] { left: calc(50% - 6px); top: -7px; cursor: ns-resize; }
+.se-box i[data-h="ne"] { right: -7px; top: -7px; cursor: nesw-resize; }
+.se-box i[data-h="e"] { right: -7px; top: calc(50% - 6px); cursor: ew-resize; }
+.se-box i[data-h="se"] { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.se-box i[data-h="s"] { left: calc(50% - 6px); bottom: -7px; cursor: ns-resize; }
+.se-box i[data-h="sw"] { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.se-box i[data-h="w"] { left: -7px; top: calc(50% - 6px); cursor: ew-resize; }
+/* 图的「大小」弹出框：拖滑块马上看到效果 */
+.size-row { display: flex; align-items: center; gap: 8px; padding: 4px 10px; }
+.size-row input[type=range] { width: 200px; }
+.size-row span { min-width: 76px; font-size: 12px; color: var(--muted); }
+.size-presets { display: flex; gap: 6px; padding: 4px 10px 6px; }
+.size-presets button { flex: 1; border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 6px; padding: 3px 0; cursor: pointer; font-size: 12px; }
+.size-presets button:hover, .size-presets button.on { border-color: var(--accent-line); color: var(--accent); }
+.sub-shot-bar { flex-wrap: wrap; }
+.sub-shot.sized img { max-height: none; }
+/* 打印课程重点（2026-11-02）：平时不显示；打印时只印它，白底黑字 */
+#printArea { display: none; }
+@media print {
+  html, body.printing { height: auto !important; overflow: visible !important; background: #fff !important; display: block !important; }
+  body.printing > *:not(#printArea) { display: none !important; }
+  body.printing #printArea { display: block; color: #111; background: #fff; font: 11pt/1.75 var(--font); padding: 0;
+    --text: #111; --muted: #555; --accent: #222; --line: #bbb; --panel2: #f2f2f2; --panel: #fff; }
+  #printArea h1 { font-size: 18pt; margin: 0 0 2pt; color: #000; }
+  #printArea .print-sub { color: #666; font-size: 10pt; margin-bottom: 12pt; border-bottom: 1px solid #bbb; padding-bottom: 6pt; }
+  #printArea h2, #printArea h3 { color: #000; break-after: avoid; }
+  #printArea .tslink { color: #444; }
+  #printArea .shot-fig { max-width: 100%; break-inside: avoid; }
+  #printArea .shot-fig img, #printArea .redraw-svg { max-width: 14cm; }
+  #printArea table { border-collapse: collapse; }
+  #printArea th, #printArea td { border: 1px solid #bbb; }
+}
 /* AI辅助理解图：SVG 白底显示；Mermaid 显示代码 */
 .redraw-svg { width: 100%; max-width: 560px; background: #fff; border-radius: 6px; display: block; cursor: zoom-in; }
 .redraw-code { font-size: 12px; line-height: 1.5; background: var(--panel2); border: 1px dashed var(--line); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; margin: 0; }
